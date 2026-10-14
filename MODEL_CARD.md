@@ -102,6 +102,6 @@ If you use TinyText in your research or project, please cite:
   title = {TinyText: Fast, Lightweight Language Models for Edge Inference},
   year = {2026},
   publisher = {GitHub},
-  howpublished = {\url{https://github.com/YOUR_USERNAME/TinyText}}
+  howpublished = {\url{https://github.com/Snaehath/tinytext}}
 }
 ```

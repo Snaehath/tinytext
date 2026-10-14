@@ -26,18 +26,18 @@ A 20M-parameter causal language model engineered for lightning-fast inference (<
 Clone the repository and install dependencies (Python 3.10+):
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/TinyText.git
-cd TinyText
+git clone https://github.com/Snaehath/tinytext.git
+cd tinytext
 pip install -r requirements.txt
 ```
 
 ### 2. Downloading Model Weights
 
-Download the compact release artifact (`tinytext_flash_20m_instruct_inference.pt`, ~73.55 MB) from the [GitHub Releases](https://github.com/YOUR_USERNAME/TinyText/releases) page into a local `checkpoints/` folder:
+Download the compact release artifact (`tinytext_flash_20m_instruct_inference.pt`, ~73.55 MB) from the [GitHub Releases](https://github.com/Snaehath/tinytext/releases) page into a local `checkpoints/` folder:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path checkpoints
-Invoke-WebRequest -Uri "https://github.com/YOUR_USERNAME/TinyText/releases/latest/download/tinytext_flash_20m_instruct_inference.pt" -OutFile "checkpoints/tinytext_flash_20m_instruct_inference.pt"
+Invoke-WebRequest -Uri "https://github.com/Snaehath/tinytext/releases/latest/download/tinytext_flash_20m_instruct_inference.pt" -OutFile "checkpoints/tinytext_flash_20m_instruct_inference.pt"
 ```
 
 ---
