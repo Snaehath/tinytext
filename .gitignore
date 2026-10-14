@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.local
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# Training and evaluation artifacts
+checkpoints/
+reports/
+runs/
+outputs/
+wandb/
+mlruns/
+
+# Datasets and generated data
+data/
+datasets/
+*.bin
+*.jsonl
+data/README.md
+
+# Research-specific configs and duplicate documentation
+configs/recovery_400m.yaml
+MODEL_CARD_INSTRUCT.md
+
+# Whitelist essential tokenizer artifact required for inference
+!data/
+!data/tokenizer/
+!data/tokenizer/**
+
+# Tests and research scripts
+tests/
+scripts/
+check_packages.py
+inspect_env.py
+
+# Model weights — distribute separately via GitHub Releases
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+
+# Local Python/package build artifacts
+build/
+dist/
+*.egg-info/

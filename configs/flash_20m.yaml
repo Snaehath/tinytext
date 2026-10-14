@@ -1,0 +1,70 @@
+# ==============================================================================
+# TinyText Flash 20M — Canonical Model Architecture & Pretraining Configuration
+#
+# Designed for consumer hardware training and edge inference (<90MB KV-cache footprint).
+# Architecture: Decoder-only Causal Transformer with GQA, RoPE, SwiGLU, and RMSNorm.
+# Trainable Parameters: Exactly 19,274,112 (strictly <20M limit).
+# ==============================================================================
+
+model:
+  model_name: "TinyText-Flash-20M-Base"
+  
+  # Vocabulary & Context
+  vocab_size: 8192              # Byte-level BPE; compact vocab maximizes embedding density
+  max_seq_len: 512              # Primary context window
+  
+  # Backbone Dimensions
+  n_layers: 8                   # 8 pre-normalized transformer decoder blocks
+  d_model: 384                  # Embedding & residual stream hidden dimension
+  
+  # Attention Mechanics
+  n_heads: 6                    # 6 query heads (head_dim = 64)
+  n_kv_heads: 2                 # Grouped-Query Attention (3:1 ratio); cuts KV-cache VRAM by 66%
+  head_dim: 64                  # Standard 64-dim per head for optimal tensor core alignment
+  attention: "grouped_query_attention"
+  
+  # Feed-Forward Network
+  intermediate_dim: 1408        # SwiGLU hidden dim (~8/3 * d_model aligned to 64 for efficiency)
+  activation: "swiglu"          # silu(gate) * up
+  
+  # Normalization & Embeddings
+  norm: "rmsnorm"
+  rms_norm_eps: 1.0e-5          # Standard numerical stability epsilon
+  pre_norm: true                # Pre-layer normalization for training stability
+  position_encoding: "rope"     # Rotary Position Embeddings
+  rope_theta: 10000.0           # Base frequency for rotary embeddings
+  
+  # Parameter Conservation
+  tie_embeddings: true          # lm_head shares weights with embed_tokens (saves ~3.1M params)
+  linear_bias: false            # Exclude linear bias terms (improves throughput, reduces overfitting)
+  dropout: 0.0                  # Standard 0.0 for small causal LM pretraining
+  
+  # Special Token IDs (matches tinytext_bpe_8k.json)
+  eos_token_id: 0               # <|endoftext|>
+  pad_token_id: 1               # <|pad|>
+  bos_token_id: 2               # <|bos|>
+  initializer_range: 0.02
+
+training:
+  # Optimization
+  learning_rate: 3.0e-4         # Peak learning rate
+  min_learning_rate: 3.0e-5     # 10% cosine decay floor
+  weight_decay: 0.1             # Applied only to 2D weight matrices (biases/norms excluded)
+  beta1: 0.9
+  beta2: 0.95                   # Typical for transformer pretraining
+  grad_clip: 1.0                # Gradient norm clipping threshold
+  warmup_steps: 500             # Linear warmup steps
+  max_steps: 10000              # Baseline 10k step run (~160M tokens)
+  
+  # Batch & Precision Dynamics
+  micro_batch_size: 4           # Fits comfortably in 4GB laptop GPUs (<1GB VRAM used)
+  gradient_accumulation_steps: 8 # Effective batch = 4 * 8 = 32 sequences (16,384 tokens/step)
+  target_effective_batch_tokens: 16384
+  mixed_precision: "fp16"       # Automatic mixed precision with GradScaler
+  
+  # Logging & Evaluation
+  eval_interval: 250
+  eval_steps: 50
+  save_interval: 500
+  log_interval: 20
+  seed: 42
