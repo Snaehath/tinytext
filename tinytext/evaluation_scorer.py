@@ -50,7 +50,7 @@ class ExtractionScoringResult:
     """Decomposed extraction scoring preserving separate content and formatting metrics."""
     value_correctness: bool
     grounding: bool
-    field_attribution: bool
+    field_attribution: Optional[bool]  # True = confirmed attribution, False = conflicting, None = not assessable
     format_compliance: bool
     strict_extraction_success: bool
     is_missing_field: bool
@@ -174,15 +174,45 @@ class EvaluationScorer:
             )
             val_corr = stated_absence and avoids_fab
             grounding = True
-            attrib = True
+
+            req_field = None
+            if expected_target and ":" in str(expected_target):
+                req_field = str(expected_target).split(":", 1)[0].strip().lower()
+
+            attrib: Optional[bool] = None
+            if not avoids_fab:
+                attrib = False  # Fabricated entity on missing field
+            elif ":" in final_output:
+                out_field = final_output.split(":", 1)[0].strip().lower()
+                if req_field:
+                    field_words = set(re.findall(r"\b\w+\b", req_field))
+                    out_words = set(re.findall(r"\b\w+\b", out_field))
+                    if out_words.intersection(field_words):
+                        attrib = True if stated_absence else False
+                    else:
+                        attrib = False  # Conflicting / wrong field label
+                else:
+                    attrib = True if stated_absence else False
+            else:
+                if req_field and any(w in out_clean for w in re.findall(r"\b\w+\b", req_field)):
+                    attrib = True if stated_absence else False
+                elif stated_absence and avoids_fab:
+                    attrib = None  # Unlabeled correct absence report -> not assessable
+                else:
+                    attrib = False
+
             fmt_comp = not is_rep and len(final_output.split()) <= 15
-            strict = val_corr and fmt_comp
+            strict = val_corr and fmt_comp and (attrib is True)
 
             detail_parts = []
             if not stated_absence:
                 detail_parts.append("Absence not reported")
             if not avoids_fab:
                 detail_parts.append("Fabricated entity detected")
+            if attrib is False:
+                detail_parts.append("Conflicting field label on missing field")
+            elif attrib is None:
+                detail_parts.append("Field attribution not assessable (unlabeled)")
             if is_rep:
                 detail_parts.append("Repetition detected")
 
@@ -232,17 +262,39 @@ class EvaluationScorer:
                 is_grounded = bool(source_passage and out_val_bare and out_val_bare in source_passage.lower())
 
             # 3. Field attribution
-            field_attrib = True
-            if ":" in final_output:
+            # Positive evidence required that requested value is associated with requested field.
+            # No conflicting label is not sufficient evidence of correct attribution.
+            field_attrib: Optional[bool] = None
+            if not val_in_out:
+                field_attrib = None  # Target value missing from output -> attribution not assessable
+            elif ":" in final_output:
                 out_parts = final_output.split(":", 1)
                 out_field = out_parts[0].strip().lower()
+                out_val_text = out_parts[1].lower()
+                if val_bare in out_val_text or val_clean in out_val_text:
+                    if field_name:
+                        field_words = set(re.findall(r"\b\w+\b", field_name))
+                        out_words = set(re.findall(r"\b\w+\b", out_field))
+                        if out_words.intersection(field_words):
+                            field_attrib = True
+                        else:
+                            field_attrib = False  # Conflicting / wrong / fabricated field label
+                    else:
+                        field_attrib = True
+                else:
+                    field_attrib = False
+            else:
+                # Unlabeled output (no colon)
                 if field_name:
                     field_words = set(re.findall(r"\b\w+\b", field_name))
-                    out_words = set(re.findall(r"\b\w+\b", out_field))
-                    if not out_words.intersection(field_words):
-                        field_attrib = False
-            else:
-                field_attrib = True
+                    out_text_words = set(re.findall(r"\b\w+\b", out_clean))
+                    if out_text_words.intersection(field_words):
+                        field_attrib = True
+                    else:
+                        # Correct value in unlabeled sentence without field attribution -> not assessable
+                        field_attrib = None
+                else:
+                    field_attrib = None
 
             # 4. Format compliance (conciseness and repetition avoidance)
             fmt_comp = True
@@ -259,15 +311,17 @@ class EvaluationScorer:
                     if out_words > val_word_count + 3:
                         fmt_comp = False
 
-            strict = val_in_out and is_grounded and field_attrib and fmt_comp
+            strict = val_in_out and is_grounded and (field_attrib is True) and fmt_comp
 
             detail_reasons = []
             if not val_in_out:
                 detail_reasons.append(f"Value '{val_bare}' missing from output")
             if not is_grounded:
                 detail_reasons.append(f"Value '{val_bare}' not grounded in source text")
-            if not field_attrib:
-                detail_reasons.append("Conflicting field attribution")
+            if field_attrib is False:
+                detail_reasons.append("Conflicting or wrong field attribution")
+            elif field_attrib is None and val_in_out:
+                detail_reasons.append("Field attribution not assessable (unlabeled sentence)")
             if not fmt_comp:
                 detail_reasons.append("Format non-compliant (rambling/repetitive)")
 
@@ -496,7 +550,20 @@ class EvaluationScorer:
                 source_passage=source_passage,
                 expected_outcome=expected_outcome,
             )
-            is_final_correct = ext_decomp.strict_extraction_success
+            if ext_decomp.is_missing_field:
+                is_final_correct = (
+                    ext_decomp.correctly_reports_absence
+                    and ext_decomp.avoids_fabrication
+                    and (ext_decomp.field_attribution is not False)
+                    and ext_decomp.format_compliance
+                )
+            else:
+                is_final_correct = (
+                    ext_decomp.value_correctness
+                    and ext_decomp.grounding
+                    and (ext_decomp.field_attribution is not False)
+                    and ext_decomp.format_compliance
+                )
             if not is_orchestrated_mode:
                 is_arg_correct = cls._verify_extraction_payload(
                     parse_res.payload if parse_res.is_valid else "", expected_target
@@ -899,7 +966,9 @@ class EvaluationScorer:
         ext_decomps = [s.extraction_decomposition for s in ext_tasks if s.extraction_decomposition is not None]
         ext_val_corr = sum(1 for d in ext_decomps if d.value_correctness)
         ext_ground = sum(1 for d in ext_decomps if d.grounding)
-        ext_attrib = sum(1 for d in ext_decomps if d.field_attribution)
+        ext_attrib_true = sum(1 for d in ext_decomps if d.field_attribution is True)
+        ext_attrib_false = sum(1 for d in ext_decomps if d.field_attribution is False)
+        ext_attrib_na = sum(1 for d in ext_decomps if d.field_attribution is None)
         ext_fmt = sum(1 for d in ext_decomps if d.format_compliance)
         ext_strict = sum(1 for d in ext_decomps if d.strict_extraction_success)
 
@@ -989,7 +1058,12 @@ class EvaluationScorer:
                 "total_extraction_tasks": n_ext,
                 "value_correctness": make_metric(ext_val_corr, n_ext, "extraction_tasks (count / N_ext)"),
                 "grounding": make_metric(ext_ground, n_ext, "extraction_tasks (count / N_ext)"),
-                "field_attribution": make_metric(ext_attrib, n_ext, "extraction_tasks (count / N_ext)"),
+                "field_attribution": {
+                    **make_metric(ext_attrib_true, n_ext, "extraction_tasks (count / N_ext)"),
+                    "attributed_true_count": ext_attrib_true,
+                    "conflicting_false_count": ext_attrib_false,
+                    "not_assessable_count": ext_attrib_na,
+                },
                 "format_compliance": make_metric(ext_fmt, n_ext, "extraction_tasks (count / N_ext)"),
                 "strict_extraction_success": make_metric(ext_strict, n_ext, "extraction_tasks (count / N_ext)"),
                 "missing_fields": {
