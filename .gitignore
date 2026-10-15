@@ -73,4 +73,5 @@ inspect_env.py
 build/
 dist/
 *.egg-info/
-configs/
+configs
+scratch/

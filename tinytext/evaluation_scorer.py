@@ -68,8 +68,8 @@ class TaskEvaluationResult:
     is_tool_selection_correct: bool
     is_syntax_valid: bool
     is_malformed: bool
-    is_execution_success: bool
-    is_argument_correct: bool
+    is_execution_success: Optional[bool]  # True = executed, False = failed execution/malformed tool, None = no tool attempted
+    is_argument_correct: Optional[bool]   # True = valid args, False = invalid args, None = no tool attempted
     is_final_answer_correct: Optional[bool]  # None for unverified/unscored open-ended tasks
     is_end_to_end_success: bool
     is_abstention: bool
@@ -422,6 +422,10 @@ class EvaluationScorer:
             for a in [ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT]
         )
 
+        is_exec_success: Optional[bool] = None
+        is_arg_correct: Optional[bool] = None
+        is_abstention = False
+
         if is_orchestrated_mode:
             is_syntax_valid = True
             is_malformed = False
@@ -434,9 +438,13 @@ class EvaluationScorer:
                 selected_action = ToolActionType.EXTRACT
             else:
                 selected_action = ToolActionType.ANSWER
-            is_exec_success = True
-            is_abstention = False
-            is_arg_correct = True
+
+            if selected_action in (ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT):
+                is_exec_success = True
+                is_arg_correct = True
+            else:
+                is_exec_success = None
+                is_arg_correct = None
         else:
             parse_res = ToolProtocol.parse(raw_generation)
             is_syntax_valid = parse_res.is_valid
@@ -446,18 +454,19 @@ class EvaluationScorer:
             if is_malformed:
                 failure_reasons.append(f"Protocol syntax error: {parse_res.error_reason}")
 
-            is_exec_success = False
-            is_abstention = False
-            is_arg_correct = False
-
             if selected_action in (ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT):
                 exec_res = ToolProtocol.execute(parse_res)
                 is_abstention = exec_res.is_abstention
                 is_exec_success = (exec_res.status == ToolStatus.SUCCESS)
                 if not is_exec_success and not is_abstention:
                     failure_reasons.append(f"Tool execution failed: {exec_res.status.value}")
+                is_arg_correct = False
+            elif has_tool_tag:
+                is_exec_success = False
+                is_arg_correct = False
             else:
-                is_exec_success = is_syntax_valid
+                is_exec_success = None
+                is_arg_correct = None
 
         # 2. Mutually Exclusive Route Taxonomy per Policy
         is_tool_sel_correct = False
@@ -565,9 +574,12 @@ class EvaluationScorer:
                     and ext_decomp.format_compliance
                 )
             if not is_orchestrated_mode:
-                is_arg_correct = cls._verify_extraction_payload(
-                    parse_res.payload if parse_res.is_valid else "", expected_target
-                )
+                if selected_action in (ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT) or has_tool_tag:
+                    is_arg_correct = cls._verify_extraction_payload(
+                        parse_res.payload if parse_res.is_valid else "", expected_target
+                    )
+                else:
+                    is_arg_correct = None
             if not is_final_correct:
                 failure_reasons.append(f"Extraction failure: {ext_decomp.detail}")
 
@@ -580,21 +592,33 @@ class EvaluationScorer:
                 failure_reasons.append(f"Neither correct fact nor safe abstention provided: '{final_output}'")
 
         elif cat == TaskCategory.ARITHMETIC or expected_outcome == "correct_calculation":
-            is_final_correct, is_arg_correct = cls._verify_arithmetic(
+            is_final_correct, calc_arg = cls._verify_arithmetic(
                 final_output,
                 parse_res.payload if (not is_orchestrated_mode and parse_res.is_valid) else "",
                 expected_target,
             )
+            if is_orchestrated_mode:
+                is_arg_correct = True if selected_action in (ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT) else None
+            else:
+                if selected_action in (ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT) or has_tool_tag:
+                    is_arg_correct = calc_arg
+                else:
+                    is_arg_correct = None
             if not is_final_correct:
                 failure_reasons.append(f"Arithmetic mismatch: output '{final_output}' did not match expected '{expected_target}'")
 
         elif cat == TaskCategory.FACTUAL_QA or expected_outcome == "correct_fact":
             is_final_correct = cls._verify_factual(final_output, expected_target)
-            if not is_orchestrated_mode:
-                is_arg_correct = (
-                    expected_target is not None
-                    and str(expected_target).lower() in (parse_res.payload.lower() if parse_res.is_valid else "")
-                )
+            if is_orchestrated_mode:
+                is_arg_correct = True if selected_action in (ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT) else None
+            else:
+                if selected_action in (ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT) or has_tool_tag:
+                    is_arg_correct = (
+                        expected_target is not None
+                        and str(expected_target).lower() in (parse_res.payload.lower() if parse_res.is_valid else "")
+                    )
+                else:
+                    is_arg_correct = None
             if not is_final_correct:
                 failure_reasons.append(f"Factual answer mismatch: '{final_output}' missing verified target '{expected_target}'")
 
@@ -615,11 +639,18 @@ class EvaluationScorer:
 
         elif cat == TaskCategory.REASONING:
             if expected_target is not None and any(char.isdigit() for char in str(expected_target)):
-                is_final_correct, is_arg_correct = cls._verify_arithmetic(
+                is_final_correct, calc_arg = cls._verify_arithmetic(
                     final_output,
                     parse_res.payload if (not is_orchestrated_mode and parse_res.is_valid) else "",
                     expected_target,
                 )
+                if is_orchestrated_mode:
+                    is_arg_correct = True if selected_action in (ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT) else None
+                else:
+                    if selected_action in (ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT) or has_tool_tag:
+                        is_arg_correct = calc_arg
+                    else:
+                        is_arg_correct = None
             else:
                 is_final_correct = (str(expected_target).lower() in final_output.lower()) if expected_target else None
             if is_final_correct is False:
@@ -888,7 +919,7 @@ class EvaluationScorer:
         opt_tasks = [s for s in results if s.tool_policy == ToolPolicy.OPTIONAL]
         n_opt = len(opt_tasks)
 
-        tool_action_tasks = [s for s in results if s.selected_action != ToolActionType.ANSWER]
+        tool_action_tasks = [s for s in results if s.is_execution_success is not None]
         n_tool_actions = len(tool_action_tasks)
 
         scored_tasks = [s for s in results if s.scoring_status == "objectively_scored" and s.is_final_answer_correct is not None]
@@ -947,8 +978,8 @@ class EvaluationScorer:
         # ---------------------------------------------------------------------
         # Tool Execution & Argument Metrics
         # ---------------------------------------------------------------------
-        arg_correct_count = sum(1 for s in tool_action_tasks if s.is_argument_correct)
-        exec_success_count = sum(1 for s in tool_action_tasks if s.is_execution_success)
+        arg_correct_count = sum(1 for s in tool_action_tasks if s.is_argument_correct is True)
+        exec_success_count = sum(1 for s in tool_action_tasks if s.is_execution_success is True)
         syntax_count = sum(1 for s in results if s.is_syntax_valid)
         malformed_count = sum(1 for s in results if s.is_malformed)
 
