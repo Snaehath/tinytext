@@ -92,10 +92,21 @@ class TinyTextTokenizer:
         self._tokenizer.save(str(path))
 
     @classmethod
-    def load(cls, path: Union[str, Path]) -> TinyTextTokenizer:
-        """Loads tokenizer from saved json file."""
+    def load(cls, path: Union[str, Path]) -> Union[TinyTextTokenizer, Any]:
+        """Loads tokenizer from saved json file (BPE or Byte-level)."""
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Tokenizer file not found: {path}")
+
+        # Check if byte-level specification
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                header = json.load(f)
+            if isinstance(header, dict) and header.get("type") == "byte_level_260":
+                from tinytext.tokenizer_byte import TinyTextByteTokenizer
+                return TinyTextByteTokenizer()
+        except Exception:
+            pass
+
         raw_tok = Tokenizer.from_file(str(path))
         return cls(raw_tok)

@@ -116,6 +116,14 @@ def main() -> None:
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--no_cache", action="store_true", help="Disable KV caching to compare against uncached mode")
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--orchestrate", action="store_true", help="Run via ReasoningOrchestrator")
+    parser.add_argument(
+        "--refinement",
+        type=str,
+        default="none",
+        choices=["none", "generic_critique", "constraint_guided"],
+        help="Test-time refinement strategy (default: none)",
+    )
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -124,26 +132,46 @@ def main() -> None:
     model, tokenizer = load_model_and_tokenizer(args.checkpoint, args.tokenizer, device)
 
     print(f"\n--- Prompt ---\n{args.prompt}")
-    result = generate_text(
-        model=model,
-        tokenizer=tokenizer,
-        prompt=args.prompt,
-        max_new_tokens=args.max_tokens,
-        temperature=args.temperature,
-        top_k=args.top_k,
-        top_p=args.top_p,
-        use_cache=not args.no_cache,
-        device=device,
-    )
 
-    print(f"\n--- Generated Continuation ---\n{result['continuation']}")
-    print("\n--- Performance Metrics ---")
-    print(f"Tokens generated : {result['tokens_generated']}")
-    print(f"Latency          : {result['time_seconds']:.3f} s")
-    print(f"Throughput       : {result['tokens_per_second']:.2f} tokens/sec")
-    print(f"Mode             : {'Cached (KV-Cache)' if result['use_cache'] else 'Uncached'}")
-    if device.type == "cuda":
-        print(f"Peak VRAM        : {result['peak_vram_mb']:.2f} MB")
+    if args.orchestrate or args.refinement != "none":
+        from tinytext.orchestrator import ReasoningOrchestrator
+        orch = ReasoningOrchestrator(model=model, tokenizer=tokenizer, device=device)
+        res = orch.process(
+            user_query=args.prompt,
+            max_new_tokens=args.max_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            refinement_strategy=args.refinement,
+        )
+        print(f"\n--- Output (Route: {res.route.value}, Status: {res.status.value}) ---\n{res.output}")
+        print("\n--- Performance Metrics ---")
+        print(f"Verified         : {res.verified}")
+        print(f"Task Success     : {res.task_success}")
+        if res.tool_used:
+            print(f"Tool Used        : {res.tool_used}")
+        print(f"Tokens generated : {res.tokens_generated}")
+        print(f"Latency          : {res.latency_seconds:.3f} s")
+    else:
+        result = generate_text(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=args.prompt,
+            max_new_tokens=args.max_tokens,
+            temperature=args.temperature,
+            top_k=args.top_k,
+            top_p=args.top_p,
+            use_cache=not args.no_cache,
+            device=device,
+        )
+
+        print(f"\n--- Generated Continuation ---\n{result['continuation']}")
+        print("\n--- Performance Metrics ---")
+        print(f"Tokens generated : {result['tokens_generated']}")
+        print(f"Latency          : {result['time_seconds']:.3f} s")
+        print(f"Throughput       : {result['tokens_per_second']:.2f} tokens/sec")
+        print(f"Mode             : {'Cached (KV-Cache)' if result['use_cache'] else 'Uncached'}")
+        if device.type == "cuda":
+            print(f"Peak VRAM        : {result['peak_vram_mb']:.2f} MB")
 
 
 if __name__ == "__main__":
