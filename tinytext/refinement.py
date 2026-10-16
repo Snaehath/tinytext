@@ -26,6 +26,13 @@ import torch
 from tinytext.model import TinyTextForCausalLM
 from tinytext.tokenizer import TinyTextTokenizer
 from tinytext.generate import generate_text
+from tinytext.budget import (
+    BudgetDiagnostics,
+    DEFAULT_INFERENCE_BUDGET,
+    InferenceBudget,
+    ThinkProfile,
+    get_budget_for_profile,
+)
 from tinytext.orchestrator import (
     ReasoningOrchestrator,
     Route,
@@ -66,6 +73,7 @@ class RefinementResult:
     total_tokens: int = 0
     latency_seconds: float = 0.0
     tool_used: Optional[str] = None
+    diagnostics: Optional[BudgetDiagnostics] = None
 
     @property
     def output(self) -> str:
@@ -94,6 +102,7 @@ class RefinementPipeline:
         max_new_tokens: int = 60,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        budget: Optional[InferenceBudget | ThinkProfile | str] = None,
     ) -> RefinementResult:
         start_time = time.time()
         route = self.orchestrator.route_query(user_query)
@@ -106,6 +115,7 @@ class RefinementPipeline:
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                budget=budget,
             )
             elapsed = time.time() - start_time
             return RefinementResult(
@@ -129,6 +139,7 @@ class RefinementPipeline:
                 total_tokens=orch_res.tokens_generated,
                 latency_seconds=elapsed,
                 tool_used=orch_res.tool_used,
+                diagnostics=orch_res.diagnostics,
             )
 
         # Allow execution if _generate is customized/mocked or model is loaded

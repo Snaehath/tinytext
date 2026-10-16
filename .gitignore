@@ -41,7 +41,8 @@ wandb/
 mlruns/
 
 # Datasets and generated data
-data/
+data/*
+!data/tokenizer/
 datasets/
 *.bin
 *.jsonl
@@ -51,10 +52,9 @@ data/README.md
 configs/recovery_400m.yaml
 MODEL_CARD_INSTRUCT.md
 
-# Whitelist essential tokenizer artifact required for inference
-!data/
-!data/tokenizer/
-!data/tokenizer/**
+# Experimental research prototypes
+tinytext/ncm/
+tinytext/ncm_lite/
 
 # Tests and research scripts
 tests/

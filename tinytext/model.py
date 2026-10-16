@@ -335,10 +335,11 @@ class TinyTextForCausalLM(nn.Module):
         temperature: float = 1.0,
         top_k: int = 50,
         top_p: float = 0.9,
+        repetition_penalty: float = 1.0,
         eos_token_id: Optional[int] = None,
         use_cache: bool = True,
     ) -> torch.Tensor:
-        """Autoregressive text generation supporting KV caching, greedy/sampling, and EOS stopping."""
+        """Autoregressive text generation supporting KV caching, greedy/sampling, repetition penalty, and EOS stopping."""
         self.eval()
         if eos_token_id is None:
             eos_token_id = self.config.eos_token_id
@@ -361,9 +362,20 @@ class TinyTextForCausalLM(nn.Module):
                 position_offset=position_offset,
             )
 
-            logits = outputs["logits"][:, -1, :]  # (batch, vocab_size)
+            logits = outputs["logits"][:, -1, :].clone()  # (batch, vocab_size)
             if use_cache:
                 past_key_values = outputs["past_key_values"]
+
+            # Repetition penalty
+            if repetition_penalty != 1.0:
+                for b in range(batch_size):
+                    unique_tokens = torch.unique(generated[b])
+                    logits_b = logits[b, unique_tokens]
+                    logits[b, unique_tokens] = torch.where(
+                        logits_b > 0,
+                        logits_b / repetition_penalty,
+                        logits_b * repetition_penalty,
+                    )
 
             # Temperature scaling
             if temperature > 0.0:

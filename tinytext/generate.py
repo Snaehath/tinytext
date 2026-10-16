@@ -49,6 +49,7 @@ def generate_text(
     temperature: float = 0.8,
     top_k: int = 40,
     top_p: float = 0.9,
+    repetition_penalty: float = 1.0,
     use_cache: bool = True,
     device: Optional[torch.device] = None,
 ) -> dict:
@@ -73,6 +74,7 @@ def generate_text(
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
+        repetition_penalty=repetition_penalty,
         eos_token_id=tokenizer.EOS_ID,
         use_cache=use_cache,
     )
@@ -105,12 +107,32 @@ def generate_text(
     }
 
 
+from tinytext.budget import (
+    BudgetDiagnostics,
+    InferenceBudget,
+    ThinkProfile,
+    get_budget_for_profile,
+)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate text using TinyText Flash 20M Base model")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/best_model.pt")
     parser.add_argument("--tokenizer", type=str, default="data/tokenizer/tinytext_bpe_8k.json")
     parser.add_argument("--prompt", type=str, default="Once upon a time,")
     parser.add_argument("--max_tokens", type=int, default=50)
+    parser.add_argument(
+        "--think",
+        type=str,
+        default=None,
+        choices=["low", "medium", "high"],
+        help="Adaptive inference budget profile (low, medium, high). Default: existing defaults when omitted.",
+    )
+    parser.add_argument(
+        "--debug_budget",
+        action="store_true",
+        help="Output structured inference budget diagnostics and exhaustion metrics.",
+    )
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top_k", type=int, default=40)
     parser.add_argument("--top_p", type=float, default=0.9)
@@ -131,6 +153,10 @@ def main() -> None:
 
     model, tokenizer = load_model_and_tokenizer(args.checkpoint, args.tokenizer, device)
 
+    # Determine effective budget and generation tokens
+    budget = get_budget_for_profile(args.think) if args.think else None
+    effective_max_tokens = budget.max_new_tokens if budget else args.max_tokens
+
     print(f"\n--- Prompt ---\n{args.prompt}")
 
     if args.orchestrate or args.refinement != "none":
@@ -138,10 +164,11 @@ def main() -> None:
         orch = ReasoningOrchestrator(model=model, tokenizer=tokenizer, device=device)
         res = orch.process(
             user_query=args.prompt,
-            max_new_tokens=args.max_tokens,
+            max_new_tokens=effective_max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
             refinement_strategy=args.refinement,
+            budget=budget,
         )
         print(f"\n--- Output (Route: {res.route.value}, Status: {res.status.value}) ---\n{res.output}")
         print("\n--- Performance Metrics ---")
@@ -151,12 +178,16 @@ def main() -> None:
             print(f"Tool Used        : {res.tool_used}")
         print(f"Tokens generated : {res.tokens_generated}")
         print(f"Latency          : {res.latency_seconds:.3f} s")
+        if args.debug_budget and res.diagnostics:
+            print("\n--- Budget Diagnostics ---")
+            for k, v in res.diagnostics.to_dict().items():
+                print(f"{k}: {v}")
     else:
         result = generate_text(
             model=model,
             tokenizer=tokenizer,
             prompt=args.prompt,
-            max_new_tokens=args.max_tokens,
+            max_new_tokens=effective_max_tokens,
             temperature=args.temperature,
             top_k=args.top_k,
             top_p=args.top_p,
@@ -172,6 +203,13 @@ def main() -> None:
         print(f"Mode             : {'Cached (KV-Cache)' if result['use_cache'] else 'Uncached'}")
         if device.type == "cuda":
             print(f"Peak VRAM        : {result['peak_vram_mb']:.2f} MB")
+        if args.debug_budget:
+            b = budget or get_budget_for_profile(None)
+            diag = BudgetDiagnostics.from_budget(b)
+            diag.record_tokens(result["tokens_generated"])
+            print("\n--- Budget Diagnostics ---")
+            for k, v in diag.to_dict().items():
+                print(f"{k}: {v}")
 
 
 if __name__ == "__main__":

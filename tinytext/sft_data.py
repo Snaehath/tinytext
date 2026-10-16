@@ -62,7 +62,14 @@ def encode_conversation_with_mask(
 
     Non-assistant tokens (System prompt, User messages, role headers, padding) receive -100 in labels.
     """
-    sys_text = system_prompt or SYSTEM_PROMPT_DEFAULT
+    sys_text = system_prompt
+    if sys_text is None:
+        for m in messages:
+            if m.get("role", "").strip().lower() == "system":
+                sys_text = m.get("content", "")
+                break
+    if not sys_text:
+        sys_text = SYSTEM_PROMPT_DEFAULT
     
     token_ids: List[int] = []
     labels: List[int] = []

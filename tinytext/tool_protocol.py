@@ -16,7 +16,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
+
+if TYPE_CHECKING:
+    from tinytext.budget import BudgetDiagnostics
+    from tinytext.tool_runtime import SafeToolRuntime
 
 from tinytext.orchestrator import (
     LocalFactualRetriever,
@@ -30,6 +34,8 @@ class ToolActionType(str, Enum):
     FACT = "FACT"
     EXTRACT = "EXTRACT"
     ANSWER = "ANSWER"
+    READ_TEXT = "READ_TEXT"
+    WRITE_TEXT = "WRITE_TEXT"
 
 
 class ToolStatus(str, Enum):
@@ -40,6 +46,12 @@ class ToolStatus(str, Enum):
     UNAVAILABLE_FACT = "UNAVAILABLE_FACT"
     UNAVAILABLE_FIELD = "UNAVAILABLE_FIELD"
     EXECUTION_ERROR = "EXECUTION_ERROR"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    PATH_TRAVERSAL_DETECTED = "PATH_TRAVERSAL_DETECTED"
+    FILE_TOO_LARGE = "FILE_TOO_LARGE"
+    PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
+    ENCODING_ERROR = "ENCODING_ERROR"
+    TOOL_BUDGET_EXHAUSTED = "TOOL_BUDGET_EXHAUSTED"
 
 
 @dataclass
@@ -70,7 +82,14 @@ class ToolProtocol:
         re.compile(r"\b(os|sys|subprocess|shutil|socket|requests|urllib)\b", re.IGNORECASE),
     ]
 
-    ALLOWED_ACTIONS = {ToolActionType.CALC, ToolActionType.FACT, ToolActionType.EXTRACT, ToolActionType.ANSWER}
+    ALLOWED_ACTIONS = {
+        ToolActionType.CALC,
+        ToolActionType.FACT,
+        ToolActionType.EXTRACT,
+        ToolActionType.ANSWER,
+        ToolActionType.READ_TEXT,
+        ToolActionType.WRITE_TEXT,
+    }
 
     @classmethod
     def parse(cls, text: str) -> ToolParseResult:
@@ -169,7 +188,12 @@ class ToolProtocol:
         )
 
     @classmethod
-    def execute(cls, parse_res: ToolParseResult) -> ToolExecutionResult:
+    def execute(
+        cls,
+        parse_res: ToolParseResult,
+        runtime: Optional[SafeToolRuntime] = None,
+        budget_diagnostics: Optional[BudgetDiagnostics] = None,
+    ) -> ToolExecutionResult:
         """Executes a parsed tool action strictly using safe determinism."""
         if not parse_res.is_valid or parse_res.action is None:
             return ToolExecutionResult(
@@ -182,6 +206,18 @@ class ToolProtocol:
 
         action = parse_res.action
         payload = parse_res.payload
+
+        # Enforce tool call budget on all tool actions (except direct ANSWER)
+        if action != ToolActionType.ANSWER and budget_diagnostics is not None:
+            if not budget_diagnostics.can_call_tool():
+                return ToolExecutionResult(
+                    action=action,
+                    status=ToolStatus.TOOL_BUDGET_EXHAUSTED,
+                    result="Tool call budget exceeded for this request.",
+                    is_abstention=True,
+                    error_detail="Maximum permitted tool calls reached.",
+                )
+            budget_diagnostics.record_tool_call()
 
         # 1. Calculator
         if action == ToolActionType.CALC:
@@ -257,7 +293,88 @@ class ToolProtocol:
                 is_abstention=False,
             )
 
-        # 4. Direct Answer
+        # 4. Workspace Text Read
+        if action == ToolActionType.READ_TEXT:
+            if runtime is None:
+                return ToolExecutionResult(
+                    action=action,
+                    status=ToolStatus.PERMISSION_DENIED,
+                    result="Permission denied: Filesystem tools are disabled (no workspace runtime configured).",
+                    is_abstention=True,
+                    error_detail="Workspace runtime not configured",
+                )
+            target_path = payload
+            path_match = re.search(r"path:\s*([^\s|]+)", payload, re.IGNORECASE)
+            if path_match:
+                target_path = path_match.group(1).strip()
+
+            success, out_msg, err_code = runtime.read_text(target_path)
+            status_map = {
+                "PERMISSION_DENIED": ToolStatus.PERMISSION_DENIED,
+                "PATH_TRAVERSAL_DETECTED": ToolStatus.PATH_TRAVERSAL_DETECTED,
+                "FILE_TOO_LARGE": ToolStatus.FILE_TOO_LARGE,
+                "ENCODING_ERROR": ToolStatus.ENCODING_ERROR,
+                "EXECUTION_ERROR": ToolStatus.EXECUTION_ERROR,
+            }
+            status = ToolStatus.SUCCESS if success else status_map.get(err_code or "", ToolStatus.EXECUTION_ERROR)
+            return ToolExecutionResult(
+                action=action,
+                status=status,
+                result=out_msg,
+                is_abstention=not success,
+                error_detail=None if success else out_msg,
+            )
+
+        # 5. Workspace Text Write
+        if action == ToolActionType.WRITE_TEXT:
+            if runtime is None:
+                return ToolExecutionResult(
+                    action=action,
+                    status=ToolStatus.PERMISSION_DENIED,
+                    result="Permission denied: Filesystem tools are disabled (no workspace runtime configured).",
+                    is_abstention=True,
+                    error_detail="Workspace runtime not configured",
+                )
+            if "|" in payload and "path:" in payload.lower() and "content:" in payload.lower():
+                parts = payload.split("|", 1)
+                p_match = re.search(r"path:\s*([^\s|]+)", parts[0], re.IGNORECASE)
+                c_match = re.search(r"content:\s*(.+)$", parts[1], re.IGNORECASE | re.DOTALL)
+                if not p_match or not c_match:
+                    return ToolExecutionResult(
+                        action=action,
+                        status=ToolStatus.MALFORMED_REQUEST,
+                        result="Malformed request: WRITE_TEXT expects 'path: <file> | content: <text>' format.",
+                        is_abstention=True,
+                        error_detail="Malformed argument schema",
+                    )
+                target_path = p_match.group(1).strip()
+                content = c_match.group(1).strip()
+            else:
+                return ToolExecutionResult(
+                    action=action,
+                    status=ToolStatus.MALFORMED_REQUEST,
+                    result="Malformed request: WRITE_TEXT expects 'path: <file> | content: <text>' format.",
+                    is_abstention=True,
+                    error_detail="Missing path or content delimiter '|'",
+                )
+
+            success, out_msg, err_code = runtime.write_text(target_path, content)
+            status_map = {
+                "PERMISSION_DENIED": ToolStatus.PERMISSION_DENIED,
+                "PATH_TRAVERSAL_DETECTED": ToolStatus.PATH_TRAVERSAL_DETECTED,
+                "PAYLOAD_TOO_LARGE": ToolStatus.PAYLOAD_TOO_LARGE,
+                "EXECUTION_ERROR": ToolStatus.EXECUTION_ERROR,
+            }
+            status = ToolStatus.SUCCESS if success else status_map.get(err_code or "", ToolStatus.EXECUTION_ERROR)
+            return ToolExecutionResult(
+                action=action,
+                status=status,
+                result=out_msg,
+                is_abstention=not success,
+                error_detail=None if success else out_msg,
+            )
+
+        # 6. Direct Answer
         if action == ToolActionType.ANSWER:
             return ToolExecutionResult(
                 action=action,
